@@ -18,41 +18,43 @@ OS_PLATFORMS = ["macOS", "iPadOS", "Windows", "ChromeOS"]
 # --- Scrapers ---
 
 def scrape_apple_versions():
-    """Scrape macOS and iPadOS versions from Apple Developer Releases page."""
-    url = "https://developer.apple.com/news/releases/"
-    resp = requests.get(url)
-    soup = BeautifulSoup(resp.text, "html.parser")
-
+    """Scrape macOS and iPadOS versions from Apple Developer RSS feed."""
     versions = {"macOS": {}, "iPadOS": {}}
-    tiles = soup.select("li.release-item")
+    rss_url = "https://developer.apple.com/news/rss/news.rss"
+    resp = requests.get(rss_url)
+    soup = BeautifulSoup(resp.content, "xml")
+    items = soup.find_all("item")
 
-    for tile in tiles:
-        title = tile.get_text(" ", strip=True)
-        date = tile.find("time")
-        release_date = date.text.strip() if date else "-"
-        for os_name in ["macOS", "iPadOS"]:
+    for os_name in versions.keys():
+        for item in items:
+            title = item.title.text
+            pub_date = item.pubDate.text
+            # Example: "macOS 26.1 beta 4 (25B5072a) is now available"
             if os_name in title:
-                if "Beta" in title:
-                    versions[os_name]["beta"] = title.split(os_name)[-1].strip()
-                    versions[os_name]["beta_release_date"] = release_date
-                else:
-                    versions[os_name]["stable"] = title.split(os_name)[-1].strip()
-    # Fill any missing fields
-    for os_name in versions:
+                if "beta" in title.lower():
+                    versions[os_name]["beta"] = title.replace("is now available", "").strip()
+                    versions[os_name]["beta_release_date"] = datetime.strptime(
+                        pub_date, "%a, %d %b %Y %H:%M:%S %Z"
+                    ).strftime("%d %b %Y")
+                elif any(x in title.lower() for x in ["released", "available"]) and "beta" not in title.lower():
+                    versions[os_name]["stable"] = title.replace("is now available", "").strip()
+
         versions[os_name].setdefault("stable", "-")
         versions[os_name].setdefault("beta", "-")
         versions[os_name].setdefault("beta_release_date", "-")
+
     return versions
 
 
 def scrape_windows_versions():
-    """Scrape Windows stable version name from Microsoft release health page."""
+    """Scrape Windows stable version from Microsoft release health page."""
     url = "https://learn.microsoft.com/en-us/windows/release-health/"
     resp = requests.get(url)
     soup = BeautifulSoup(resp.text, "html.parser")
 
     version = "-"
     try:
+        # Capture "Windows 11, version 25H2" or similar
         heading = soup.find(["h2", "h3"], string=lambda x: x and "Windows 11" in x)
         if heading:
             version = heading.text.strip()
@@ -63,21 +65,31 @@ def scrape_windows_versions():
 
 
 def scrape_chromeos_versions():
-    """Scrape ChromeOS Stable/Beta and Beta release date dynamically from Chromium Dash."""
+    """Scrape ChromeOS versions and beta release date from Chromium Dash."""
     try:
-        all_data = requests.get("https://chromiumdash.appspot.com/fetch_milestones").json()
-        stable = next((x for x in all_data if x.get("channel") == "Stable"), {})
-        beta = next((x for x in all_data if x.get("channel") == "Beta"), {})
+        url = "https://chromiumdash.appspot.com/fetch_milestone_schedule"
+        data = requests.get(url).json()
+
+        # Find latest stable and beta milestones
+        stable = next((x for x in data if x.get("channel") == "Stable"), {})
+        beta = next((x for x in data if x.get("channel") == "Beta"), {})
 
         stable_version = stable.get("milestone", "-")
         beta_version = beta.get("milestone", "-")
-        beta_date = beta.get("branch_point", "-") or beta.get("beta_promotion", "-")
+
+        # Prefer beta_promotion date
+        beta_date = beta.get("beta_promotion", "") or beta.get("branch_point", "-")
+        if beta_date:
+            try:
+                beta_date = datetime.strptime(beta_date, "%Y-%m-%d").strftime("%d %b %Y")
+            except Exception:
+                pass
 
         return {
             "ChromeOS": {
                 "stable": f"Chrome {stable_version}",
                 "beta": f"Chrome {beta_version}",
-                "beta_release_date": beta_date,
+                "beta_release_date": beta_date or "-",
             }
         }
     except Exception as e:
