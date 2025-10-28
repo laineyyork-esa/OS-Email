@@ -1,209 +1,180 @@
 import requests
 from bs4 import BeautifulSoup
 import json
-import smtplib
-import os
-import re
 from datetime import datetime, timedelta
-from dateutil import parser as dateparser
-import warnings
-from email.mime.text import MIMEText
+import dateparser
+import smtplib
 from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
-warnings.filterwarnings("ignore", category=UserWarning, module='dateutil.parser')
-
+# ---------- CONFIG ----------
 HISTORY_FILE = "data/os_versions.json"
-RECIPIENT = "lainey.york@esa.edu.au"
+EMAIL_FROM = "laineyyork97@gmail.com"
+EMAIL_TO = "lainey.york@esa.edu.au"
+EMAIL_SUBJECT = "Daily OS Versions"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_PASSWORD = "YOUR_APP_PASSWORD_HERE"  # Gmail App Password
+OS_LIST = ["macOS", "iPadOS", "Windows", "ChromeOS"]
 
-# -----------------------------------------------------------
-# APPLE SCRAPER
-# -----------------------------------------------------------
-def scrape_apple_versions():
-    """Scrape macOS and iPadOS versions from Apple Developer RSS feed."""
-    versions = {"macOS": {}, "iPadOS": {}}
-    rss_url = "https://developer.apple.com/news/rss/news.rss"
-    resp = requests.get(rss_url)
-    soup = BeautifulSoup(resp.content, "xml")
-    items = soup.find_all("item")
+# ---------- HELPER FUNCTIONS ----------
 
-    for os_name in versions.keys():
-        beta_found = False
-        stable_found = False
-
-        for item in items:
-            title = item.title.text.strip()
-            pub_date = item.pubDate.text.strip()
-
-            # Match beta posts like: "macOS 26.1 beta 4 (25B5072a) now available"
-            if os_name in title and "beta" in title.lower() and not beta_found:
-                match = re.search(rf"{os_name}\s[\d\.]+\s.*?beta.*?\)", title, re.IGNORECASE)
-                versions[os_name]["beta"] = match.group(0) if match else title
-                versions[os_name]["beta_release_date"] = dateparser.parse(pub_date).strftime("%d %b %Y")
-                beta_found = True
-
-            # Match stable posts like: "macOS 26.1 now available"
-            elif os_name in title and "beta" not in title.lower() and not stable_found:
-                match = re.search(rf"{os_name}\s[\d\.]+", title)
-                versions[os_name]["stable"] = match.group(0).replace(os_name, "").strip() if match else title
-                stable_found = True
-
-        versions[os_name].setdefault("stable", "-")
-        versions[os_name].setdefault("beta", "-")
-        versions[os_name].setdefault("beta_release_date", "-")
-
-    return versions
-
-# -----------------------------------------------------------
-# WINDOWS SCRAPER
-# -----------------------------------------------------------
-def scrape_windows_versions():
-    """Scrape latest Windows version from Microsoft release health."""
-    url = "https://learn.microsoft.com/en-us/windows/release-health/"
-    resp = requests.get(url)
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    stable_version = "-"
-    heading = soup.find("h2", string=re.compile("Windows 11"))
-    if heading:
-        text = heading.get_text(strip=True)
-        match = re.search(r"Windows\s11[, ]+version\s[\dH]+", text)
-        if match:
-            stable_version = match.group(0)
-
-    return {"Windows": {"stable": stable_version, "beta": "-", "beta_release_date": "-"}}
-
-# -----------------------------------------------------------
-# CHROMEOS SCRAPER
-# -----------------------------------------------------------
-def scrape_chromeos_versions():
-    """Scrape ChromeOS versions and beta release date from Chromium Dash."""
-    try:
-        url = "https://chromiumdash.appspot.com/fetch_milestone_schedule"
-        response = requests.get(url)
-        data = response.json()
-
-        if isinstance(data, dict):
-            data = [data]
-
-        stable = next((x for x in data if x.get("channel", "").lower() == "stable"), {})
-        beta = next((x for x in data if x.get("channel", "").lower() == "beta"), {})
-
-        stable_version = stable.get("milestone", "-")
-        beta_version = beta.get("milestone", "-")
-
-        beta_date = beta.get("beta_promotion", "") or beta.get("branch_point", "-")
-        if beta_date:
-            try:
-                beta_date = datetime.strptime(beta_date, "%Y-%m-%d").strftime("%d %b %Y")
-            except Exception:
-                pass
-
-        return {
-            "ChromeOS": {
-                "stable": f"Chrome {stable_version}" if stable_version != "-" else "-",
-                "beta": f"Chrome {beta_version}" if beta_version != "-" else "-",
-                "beta_release_date": beta_date or "-",
-            }
-        }
-
-    except Exception as e:
-        print("ChromeOS scrape error:", e)
-        return {"ChromeOS": {"stable": "-", "beta": "-", "beta_release_date": "-"}}
-
-# -----------------------------------------------------------
-# HISTORY HANDLING
-# -----------------------------------------------------------
-def load_history():
+def ensure_history_file():
+    import os
+    os.makedirs("data", exist_ok=True)
     if not os.path.exists(HISTORY_FILE):
-        return {}
-    with open(HISTORY_FILE, "r") as f:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump({}, f)
+
+def load_history():
+    ensure_history_file()
+    with open(HISTORY_FILE) as f:
         return json.load(f)
 
 def save_history(data):
-    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-    history = load_history()
+    ensure_history_file()
+    # Keep only last 7 days
     today = datetime.now().strftime("%Y-%m-%d")
+    history = load_history()
     history[today] = data
-
-    # Keep only 7 days
-    if len(history) > 7:
-        for k in sorted(history.keys())[:-7]:
-            del history[k]
-
+    keys = sorted(history.keys(), reverse=True)[:7]
+    new_history = {k: history[k] for k in keys}
     with open(HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
+        json.dump(new_history, f, indent=2)
 
-# -----------------------------------------------------------
-# CHANGE DETECTION
-# -----------------------------------------------------------
-def detect_changes(history, current_data):
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    previous = history.get(yesterday, {})
+def detect_changes(old_data, new_data):
     changes = []
-
-    for os_name, vals in current_data.items():
-        if os_name not in previous:
-            changes.append(f"🆕 {os_name} update: Stable: {vals['stable']}, Beta: {vals['beta']}, Beta_release_date: {vals['beta_release_date']}")
-            continue
-
-        for key in vals:
-            if vals[key] != previous[os_name].get(key):
-                changes.append(f"🆕 {os_name} update: Stable: {vals['stable']}, Beta: {vals['beta']}, Beta_release_date: {vals['beta_release_date']}")
-                break
-
+    for os_name in OS_LIST:
+        old = old_data.get(os_name, {})
+        new = new_data.get(os_name, {})
+        for field in ["stable", "beta", "beta_release_date"]:
+            if old.get(field) != new.get(field):
+                changes.append(f"{os_name} {field} changed from {old.get(field, '-') } to {new.get(field, '-')}")
     return changes
 
-# -----------------------------------------------------------
-# EMAIL COMPOSITION
-# -----------------------------------------------------------
-def send_email(subject, body, html_table):
-    sender = os.getenv("GMAIL_USER")
-    password = os.getenv("GMAIL_PASS")
+# ---------- SCRAPERS ----------
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = sender
-    msg["To"] = RECIPIENT
+def scrape_apple_versions():
+    versions = {}
+    try:
+        resp = requests.get("https://developer.apple.com/news/rss/news.rss")
+        soup = BeautifulSoup(resp.content, "xml")
+        items = soup.find_all("item")
+        for os_name in ["macOS", "iPadOS"]:
+            stable, beta, beta_date = "-", "-", "-"
+            for item in items:
+                title = item.title.text
+                pub_date = item.pubDate.text
+                # Parse only numeric version numbers
+                import re
+                version_match = re.search(rf"{os_name}\s\d+(\.\d+)*", title, re.IGNORECASE)
+                beta_match = re.search(rf"{os_name}\s\d+(\.\d+)*\sBeta\s?\d*", title, re.IGNORECASE)
+                if beta_match:
+                    beta = beta_match.group(0)
+                    beta_date = dateparser.parse(pub_date).strftime("%d %b %Y")
+                elif version_match and stable == "-":
+                    stable = version_match.group(0)
+            versions[os_name] = {
+                "stable": stable,
+                "beta": beta,
+                "beta_release_date": beta_date
+            }
+    except Exception as e:
+        print("Apple scrape error:", e)
+    return versions
 
-    text_part = MIMEText(body, "plain")
-    html_part = MIMEText(html_table, "html")
+def scrape_windows_versions():
+    versions = {}
+    try:
+        resp = requests.get("https://learn.microsoft.com/en-us/windows/release-health/")
+        soup = BeautifulSoup(resp.content, "html.parser")
+        # Find the latest Windows 11 version
+        table = soup.find("table")
+        stable = "-"
+        if table:
+            for row in table.find_all("tr"):
+                cols = row.find_all("td")
+                if cols and "Windows 11" in cols[0].text:
+                    stable = cols[0].text.strip()
+                    break
+        versions["Windows"] = {
+            "stable": stable,
+            "beta": "-",
+            "beta_release_date": "-"
+        }
+    except Exception as e:
+        print("Windows scrape error:", e)
+    return versions
 
-    msg.attach(text_part)
-    msg.attach(html_part)
+def scrape_chrome_versions():
+    versions = {}
+    try:
+        resp = requests.get("https://chromiumdash.appspot.com/schedule")
+        soup = BeautifulSoup(resp.content, "html.parser")
+        # Look for the Beta promotion row for Chrome
+        stable, beta, beta_date = "-", "-", "-"
+        table = soup.find("table")
+        if table:
+            for row in table.find_all("tr"):
+                cols = row.find_all("td")
+                if cols:
+                    text = cols[0].text.strip()
+                    if "Stable" in text:
+                        stable = cols[1].text.strip()
+                    if "Beta" in text:
+                        beta = cols[1].text.strip()
+                        beta_date = cols[2].text.strip()
+        versions["ChromeOS"] = {
+            "stable": stable,
+            "beta": beta,
+            "beta_release_date": beta_date
+        }
+    except Exception as e:
+        print("ChromeOS scrape error:", e)
+    return versions
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(sender, password)
-        server.send_message(msg)
+# ---------- EMAIL ----------
 
-# -----------------------------------------------------------
-# MAIN
-# -----------------------------------------------------------
+def send_email(data, changes):
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_FROM
+    msg['To'] = EMAIL_TO
+    msg['Subject'] = EMAIL_SUBJECT
+
+    summary = ""
+    if changes:
+        summary += "🆕 Changes in last 24h:\n"
+        for c in changes:
+            summary += f"{c}\n"
+    summary += "\n"
+
+    table_html = "<table border='1' style='border-collapse: collapse'><tr><th>Platform</th><th>Stable</th><th>Beta</th><th>Beta Release Date</th></tr>"
+    for os_name in OS_LIST:
+        row = data.get(os_name, {})
+        table_html += f"<tr><td>{os_name}</td><td>{row.get('stable', '-')}</td><td>{row.get('beta', '-')}</td><td>{row.get('beta_release_date', '-')}</td></tr>"
+    table_html += "</table>"
+
+    msg.attach(MIMEText(summary + table_html, 'html'))
+
+    server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+    server.starttls()
+    server.login(EMAIL_FROM, SMTP_PASSWORD)
+    server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
+    server.quit()
+
+# ---------- MAIN ----------
+
 def main():
     data = {}
     data.update(scrape_apple_versions())
     data.update(scrape_windows_versions())
-    data.update(scrape_chromeos_versions())
+    data.update(scrape_chrome_versions())
 
     history = load_history()
-    changes = detect_changes(history, data)
+    changes = detect_changes(history.get(list(history.keys())[-1], {}), data) if history else []
+
     save_history(data)
-
-    # Build table
-    html_table = """
-    <html><body>
-    <h2>Daily OS Versions</h2>
-    <table border="1" cellspacing="0" cellpadding="4">
-      <tr><th>Platform</th><th>Stable</th><th>Beta</th><th>Beta Release Date</th></tr>
-    """
-    for os_name, vals in data.items():
-        html_table += f"<tr><td>{os_name}</td><td>{vals['stable']}</td><td>{vals['beta']}</td><td>{vals['beta_release_date']}</td></tr>"
-    html_table += "</table><br><p><i>Last updated: {}</i></p></body></html>".format(datetime.now().strftime("%d %b %Y %H:%M AEST"))
-
-    summary = "\n".join(changes) if changes else "No new updates in the past 24 hours."
-    subject = f"Daily OS Version Report - {datetime.now().strftime('%d %b %Y')}"
-
-    send_email(subject, summary, html_table)
-    print("Email sent successfully.")
+    send_email(data, changes)
 
 if __name__ == "__main__":
     main()
