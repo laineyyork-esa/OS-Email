@@ -1,143 +1,126 @@
+import os
+import smtplib
+from email.message import EmailMessage
+from datetime import datetime
+import json
 import requests
 from bs4 import BeautifulSoup
 import dateparser
-import json
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from datetime import datetime, timedelta
-import os
 
-# -------- CONFIG --------
-EMAIL_FROM = os.environ.get("EMAIL_FROM")          # e.g., laineyyork97@gmail.com
-EMAIL_TO = os.environ.get("EMAIL_TO")              # e.g., lainey.york@esa.edu.au
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")    # Gmail App Password
+# Paths
 HISTORY_FILE = "data/os_versions.json"
+
+# Gmail setup
+EMAIL_FROM = os.environ["gmail_user"]
+EMAIL_TO = os.environ["gmail_user"]  # change if sending to a different recipient
+SMTP_PASSWORD = os.environ["gmail_pass"]
+
+# Initialize OS data
 OS_LIST = ["macOS", "iPadOS", "Windows", "ChromeOS"]
-RSS_URL = "https://developer.apple.com/news/rss/news.rss"
-WINDOWS_URL = "https://learn.microsoft.com/en-us/windows/release-health/"
-CHROMEDASH_URL = "https://chromiumdash.appspot.com/schedule"
 
-# Ensure data folder exists
-os.makedirs("data", exist_ok=True)
-
-# -------- SCRAPERS --------
+def ensure_data_folder():
+    if not os.path.exists("data"):
+        os.makedirs("data")
 
 def scrape_apple_versions():
-    versions = {"macOS": {}, "iPadOS": {}}
+    url = "https://developer.apple.com/news/rss/news.rss"
     try:
-        r = requests.get(RSS_URL)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.content, "lxml-xml")
+        response = requests.get(url)
+        soup = BeautifulSoup(response.content, "xml")
         items = soup.find_all("item")
-
+        versions = {"macOS": {}, "iPadOS": {}}
         for item in items:
             title = item.title.text
             pub_date = item.pubDate.text
-            parsed_date = dateparser.parse(pub_date).strftime("%d %b %Y")
-
             if "macOS" in title:
                 versions["macOS"]["beta"] = title
-                versions["macOS"]["beta_release_date"] = parsed_date
+                versions["macOS"]["beta_release_date"] = dateparser.parse(pub_date).strftime("%d %b %Y")
             elif "iPadOS" in title:
                 versions["iPadOS"]["beta"] = title
-                versions["iPadOS"]["beta_release_date"] = parsed_date
-
-        # Example stable versions (replace with actual logic if scraping is available)
-        versions["macOS"]["stable"] = "26.1"
-        versions["iPadOS"]["stable"] = "26.0.1"
-
+                versions["iPadOS"]["beta_release_date"] = dateparser.parse(pub_date).strftime("%d %b %Y")
+        return versions
     except Exception as e:
         print(f"Apple scrape error: {e}")
-        for os_name in ["macOS", "iPadOS"]:
-            versions[os_name] = {"stable": "-", "beta": "-", "beta_release_date": "-"}
-
-    return versions
+        return {}
 
 def scrape_windows_versions():
-    versions = {"Windows": {}}
     try:
-        # Simplified: Windows stable version
-        versions["Windows"]["stable"] = "Windows 11 25H5"
-        versions["Windows"]["beta"] = "-"
-        versions["Windows"]["beta_release_date"] = "-"
+        url = "https://learn.microsoft.com/en-us/windows/release-health/"
+        response = requests.get(url)
+        soup = BeautifulSoup(response.content, "html.parser")
+        stable = soup.find("td", string=lambda x: "Windows 11" in x if x else False)
+        stable_version = stable.text.strip() if stable else "-"
+        return {"Windows": {"stable": stable_version, "beta": "-", "beta_release_date": "-"}}
     except Exception as e:
         print(f"Windows scrape error: {e}")
-        versions["Windows"] = {"stable": "-", "beta": "-", "beta_release_date": "-"}
-    return versions
+        return {"Windows": {"stable": "-", "beta": "-", "beta_release_date": "-"}}
 
 def scrape_chrome_versions():
-    versions = {"ChromeOS": {}}
     try:
-        r = requests.get(CHROMEDASH_URL)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.content, "html.parser")
+        url = "https://chromiumdash.appspot.com/schedule"
+        response = requests.get(url)
+        soup = BeautifulSoup(response.content, "html.parser")
         table = soup.find("table")
+        stable, beta = "-", "-"
+        beta_release_date = "-"
         if table:
             rows = table.find_all("tr")
             for row in rows:
-                cells = row.find_all("td")
-                if cells and "Beta" in cells[0].text:
-                    versions["ChromeOS"]["beta"] = cells[0].text.strip()
-                    versions["ChromeOS"]["beta_release_date"] = cells[1].text.strip()
-                elif cells and "Stable" in cells[0].text:
-                    versions["ChromeOS"]["stable"] = cells[0].text.strip()
-        if not versions["ChromeOS"]:
-            versions["ChromeOS"] = {"stable": "-", "beta": "-", "beta_release_date": "-"}
+                cols = row.find_all("td")
+                if len(cols) >= 3:
+                    channel = cols[0].text.strip()
+                    version = cols[1].text.strip()
+                    date = cols[2].text.strip()
+                    if "Stable" in channel:
+                        stable = version
+                    elif "Beta" in channel:
+                        beta = version
+                        beta_release_date = date
+        return {"ChromeOS": {"stable": stable, "beta": beta, "beta_release_date": beta_release_date}}
     except Exception as e:
         print(f"ChromeOS scrape error: {e}")
-        versions["ChromeOS"] = {"stable": "-", "beta": "-", "beta_release_date": "-"}
-    return versions
-
-# -------- HISTORY & CHANGE DETECTION --------
+        return {"ChromeOS": {"stable": "-", "beta": "-", "beta_release_date": "-"}}
 
 def load_history():
+    ensure_data_folder()
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, "r") as f:
             return json.load(f)
     return {}
 
 def save_history(data):
+    ensure_data_folder()
     with open(HISTORY_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-def detect_changes(history, data):
+def detect_changes(old_data, new_data):
     changes = {}
     for os_name in OS_LIST:
-        old = history.get(os_name, {})
-        new = data.get(os_name, {})
-        changes[os_name] = {}
+        old = old_data.get(os_name, {})
+        new = new_data.get(os_name, {})
         for key in ["stable", "beta", "beta_release_date"]:
             if old.get(key) != new.get(key):
-                changes[os_name][key] = new.get(key, "-")
+                changes[os_name] = new
     return changes
 
-# -------- EMAIL --------
-
 def send_email(data, changes):
-    msg = MIMEMultipart()
+    msg = EmailMessage()
+    msg["Subject"] = f"Daily OS Versions - {datetime.now().strftime('%d %b %Y')}"
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
-    msg["Subject"] = "Daily OS Versions"
 
-    html = "<h3>Daily OS Versions</h3>"
-
-    # Summary
-    for os_name in OS_LIST:
-        update_text = []
-        for key, value in changes.get(os_name, {}).items():
-            if value != "-":
-                update_text.append(f"{key.capitalize()}: {value}")
-        if update_text:
-            html += f"<p>🆕 {os_name} update: {' | '.join(update_text)}</p>"
+    # Short summary
+    summary = "🆕 Daily OS Version Updates\n"
+    for os_name, info in changes.items():
+        summary += f"🆕 {os_name} update: Stable: {info.get('stable', '-')}, Beta: {info.get('beta', '-')}, Beta_release_date: {info.get('beta_release_date', '-')}\n"
 
     # Table
-    html += "<table border='1' cellpadding='5'><tr><th>Platform</th><th>Stable</th><th>Beta</th><th>Beta Release Date</th></tr>"
+    table = "Platform\tStable\tBeta\tBeta Release Date\n"
     for os_name in OS_LIST:
-        html += f"<tr><td>{os_name}</td><td>{data.get(os_name, {}).get('stable', '-')}</td><td>{data.get(os_name, {}).get('beta', '-')}</td><td>{data.get(os_name, {}).get('beta_release_date', '-')}</td></tr>"
-    html += "</table>"
+        info = data.get(os_name, {})
+        table += f"{os_name}\t{info.get('stable', '-')}\t{info.get('beta', '-')}\t{info.get('beta_release_date', '-')}\n"
 
-    msg.attach(MIMEText(html, "html"))
+    msg.set_content(summary + "\n" + table)
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
@@ -147,8 +130,6 @@ def send_email(data, changes):
         print("Email sent successfully")
     except Exception as e:
         print(f"Email send error: {e}")
-
-# -------- MAIN --------
 
 def main():
     data = {}
