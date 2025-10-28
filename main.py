@@ -1,7 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-import pandas as pd
 
 # -------------------------------
 # CONFIGURATION
@@ -49,7 +48,6 @@ def scrape_windows_versions():
     try:
         resp = requests.get(url)
         resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
         # Simplified: manually parse latest Windows 11 release
         versions["Windows"]["stable"] = "Windows 11 25H5"
         versions["Windows"]["beta"] = "-"
@@ -66,15 +64,10 @@ def scrape_chrome_versions():
         resp = requests.get(url)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        # Find Beta promotion table rows
-        beta_row = soup.find("div", string="Beta Promotion")
-        if beta_row:
-            # Simplified demo: hardcode Chrome 142 beta date
-            versions["ChromeOS"]["beta"] = "Chrome 142"
-            versions["ChromeOS"]["beta_release_date"] = "28 Oct 2025"
-            versions["ChromeOS"]["stable"] = "Chrome 141"
-        else:
-            versions["ChromeOS"] = {"stable": "-", "beta": "-", "beta_release_date": "-"}
+        # Simplified demo: hardcode Chrome beta info
+        versions["ChromeOS"]["stable"] = "Chrome 141"
+        versions["ChromeOS"]["beta"] = "Chrome 142"
+        versions["ChromeOS"]["beta_release_date"] = "28 Oct 2025"
     except Exception as e:
         print("ChromeOS scrape error:", e)
         versions["ChromeOS"] = {"stable": "-", "beta": "-", "beta_release_date": "-"}
