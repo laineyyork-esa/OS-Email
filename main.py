@@ -29,11 +29,10 @@ def scrape_apple_versions():
         for item in items:
             title = item.title.text
             pub_date = item.pubDate.text
-            # Example: "macOS 26.1 beta 4 (25B5072a) is now available"
             if os_name in title:
                 if "beta" in title.lower():
                     versions[os_name]["beta"] = title.replace("is now available", "").strip()
-                  versions[os_name]["beta_release_date"] = dateparser.parse(pub_date).strftime("%d %b %Y")
+                    versions[os_name]["beta_release_date"] = dateparser.parse(pub_date).strftime("%d %b %Y")
                 elif any(x in title.lower() for x in ["released", "available"]) and "beta" not in title.lower():
                     versions[os_name]["stable"] = title.replace("is now available", "").strip()
 
@@ -42,7 +41,6 @@ def scrape_apple_versions():
         versions[os_name].setdefault("beta_release_date", "-")
 
     return versions
-
 
 def scrape_windows_versions():
     """Scrape Windows stable version from Microsoft release health page."""
