@@ -18,57 +18,70 @@ OS_PLATFORMS = ["macOS", "iPadOS", "Windows", "ChromeOS"]
 # --- Scrapers ---
 
 def scrape_apple_versions():
-    """Scrapes macOS and iPadOS stable/beta versions and beta release dates."""
-    versions = {}
-    # RSS feed (simpler than parsing HTML)
-    rss_url = "https://developer.apple.com/news/rss/news.rss"
-    resp = requests.get(rss_url)
-    soup = BeautifulSoup(resp.content, "xml")
-    items = soup.find_all("item")
-    
-    for os_name in ["macOS", "iPadOS"]:
-        for item in items:
-            title = item.title.text
-            pub_date = item.pubDate.text
-            if os_name in title and "Beta" in title:
-                versions[os_name] = {
-                    "stable": "-",  # We'll fill later
-                    "beta": title.split(":")[-1].strip(),
-                    "beta_release_date": datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %Z").strftime("%d %b %Y")
-                }
-            elif os_name in title and "Stable" in title:
-                versions.setdefault(os_name, {})["stable"] = title.split(":")[-1].strip()
+    """Scrape macOS and iPadOS versions from Apple Developer Releases page."""
+    url = "https://developer.apple.com/news/releases/"
+    resp = requests.get(url)
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    versions = {"macOS": {}, "iPadOS": {}}
+    tiles = soup.select("li.release-item")
+
+    for tile in tiles:
+        title = tile.get_text(" ", strip=True)
+        date = tile.find("time")
+        release_date = date.text.strip() if date else "-"
+        for os_name in ["macOS", "iPadOS"]:
+            if os_name in title:
+                if "Beta" in title:
+                    versions[os_name]["beta"] = title.split(os_name)[-1].strip()
+                    versions[os_name]["beta_release_date"] = release_date
+                else:
+                    versions[os_name]["stable"] = title.split(os_name)[-1].strip()
+    # Fill any missing fields
+    for os_name in versions:
+        versions[os_name].setdefault("stable", "-")
+        versions[os_name].setdefault("beta", "-")
+        versions[os_name].setdefault("beta_release_date", "-")
     return versions
 
+
 def scrape_windows_versions():
-    """Scrapes Windows release info."""
+    """Scrape Windows stable version name from Microsoft release health page."""
     url = "https://learn.microsoft.com/en-us/windows/release-health/"
     resp = requests.get(url)
     soup = BeautifulSoup(resp.text, "html.parser")
-    # Simplified example: find table row with "Windows 11" and latest version
+
+    version = "-"
     try:
-        table = soup.find("table")
-        rows = table.find_all("tr")
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) >= 2 and "Windows 11" in cells[0].text:
-                stable = cells[1].text.strip()
-                return {"Windows": {"stable": stable, "beta": "-", "beta_release_date": "-"}}
+        heading = soup.find(["h2", "h3"], string=lambda x: x and "Windows 11" in x)
+        if heading:
+            version = heading.text.strip()
     except Exception:
         pass
-    return {"Windows": {"stable": "-", "beta": "-", "beta_release_date": "-"}}
+
+    return {"Windows": {"stable": version, "beta": "-", "beta_release_date": "-"}}
+
 
 def scrape_chromeos_versions():
-    """Scrapes ChromeOS Stable/Beta and Beta release date from Chromium Dash JSON."""
-    url = "https://chromiumdash.appspot.com/fetch_milestone_schedule?mstone=142"  # replace 142 with latest
+    """Scrape ChromeOS Stable/Beta and Beta release date dynamically from Chromium Dash."""
     try:
-        data = requests.get(url).json()
-        stable_version = data.get("stable_milestone", "141")
-        beta_info = data.get("beta_milestones", [{}])[-1]  # latest beta milestone
-        beta_version = beta_info.get("milestone", "142")
-        beta_date = beta_info.get("beta_promotion", "")
-        return {"ChromeOS": {"stable": f"Chrome {stable_version}", "beta": f"Chrome {beta_version}", "beta_release_date": beta_date}}
-    except Exception:
+        all_data = requests.get("https://chromiumdash.appspot.com/fetch_milestones").json()
+        stable = next((x for x in all_data if x.get("channel") == "Stable"), {})
+        beta = next((x for x in all_data if x.get("channel") == "Beta"), {})
+
+        stable_version = stable.get("milestone", "-")
+        beta_version = beta.get("milestone", "-")
+        beta_date = beta.get("branch_point", "-") or beta.get("beta_promotion", "-")
+
+        return {
+            "ChromeOS": {
+                "stable": f"Chrome {stable_version}",
+                "beta": f"Chrome {beta_version}",
+                "beta_release_date": beta_date,
+            }
+        }
+    except Exception as e:
+        print("ChromeOS scrape error:", e)
         return {"ChromeOS": {"stable": "-", "beta": "-", "beta_release_date": "-"}}
 
 # --- Utilities ---
