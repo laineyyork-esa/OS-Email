@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import json
-from datetime import datetime, timedelta
+from dateutil import parser as dateparser
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -33,9 +33,7 @@ def scrape_apple_versions():
             if os_name in title:
                 if "beta" in title.lower():
                     versions[os_name]["beta"] = title.replace("is now available", "").strip()
-                    versions[os_name]["beta_release_date"] = datetime.strptime(
-                        pub_date, "%a, %d %b %Y %H:%M:%S %Z"
-                    ).strftime("%d %b %Y")
+                  versions[os_name]["beta_release_date"] = dateparser.parse(pub_date).strftime("%d %b %Y")
                 elif any(x in title.lower() for x in ["released", "available"]) and "beta" not in title.lower():
                     versions[os_name]["stable"] = title.replace("is now available", "").strip()
 
