@@ -1,31 +1,26 @@
-name: Daily OS Email
+name: Daily OS Versions Email
 
 on:
   schedule:
-    - cron: '0 22 * * *'  # 8:00am AEST (UTC+10)
+    - cron: '0 22 * * *' # 8:00 AM AEST
   workflow_dispatch:
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
-
-    env:
-      gmail_user: ${{ secrets.gmail_user }}
-      gmail_pass: ${{ secrets.gmail_pass }}
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
+      - uses: actions/checkout@v3
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 python-dateutil dateparser
-
-      - name: Run Python script
+          pip install requests beautifulsoup4 python-dateutil
+      - name: Run scraper
+        env:
+          GMAIL_USER: ${{ secrets.gmail_user }}
+          GMAIL_PASS: ${{ secrets.gmail_pass }}
+          EMAIL_TO: ${{ secrets.email_to }}
         run: python main.py
