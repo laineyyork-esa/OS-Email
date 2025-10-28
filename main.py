@@ -1,11 +1,14 @@
 import requests
 from bs4 import BeautifulSoup
 import json
-from dateutil import parser as dateparser
+from datetime import datetime, timedelta
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import os
+import warnings
+from dateutil import parser as dateparser
+warnings.filterwarnings("ignore", category=UserWarning, module='dateutil.parser')
 
 # --- Config ---
 HISTORY_FILE = "data/os_versions.json"
@@ -64,9 +67,13 @@ def scrape_chromeos_versions():
     """Scrape ChromeOS versions and beta release date from Chromium Dash."""
     try:
         url = "https://chromiumdash.appspot.com/fetch_milestone_schedule"
-        data = requests.get(url).json()
+        response = requests.get(url)
+        data = response.json()
 
-        # Find latest stable and beta milestones
+        # Ensure we have a list
+        if isinstance(data, dict):
+            data = [data]
+
         stable = next((x for x in data if x.get("channel") == "Stable"), {})
         beta = next((x for x in data if x.get("channel") == "Beta"), {})
 
@@ -88,6 +95,7 @@ def scrape_chromeos_versions():
                 "beta_release_date": beta_date or "-",
             }
         }
+
     except Exception as e:
         print("ChromeOS scrape error:", e)
         return {"ChromeOS": {"stable": "-", "beta": "-", "beta_release_date": "-"}}
