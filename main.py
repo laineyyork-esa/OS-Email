@@ -79,6 +79,8 @@ def load_history():
     return {}
 
 def save_history(data):
+    # Ensure data folder exists
+    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
     # Keep only last 7 days
     history = load_history()
     today = datetime.now().strftime("%Y-%m-%d")
